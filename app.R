@@ -7,6 +7,17 @@ ui <- navbarPage("Flood Frequency Analysis",
      
        sidebarLayout(
           sidebarPanel(
+            # choose gauging station
+            selectInput("station", "Station",
+                        c("Jackson" = "USGS02486000", 
+                          "Edinburg" = "USGS02482000", 
+                          "Carthage" = "USGS02482550", 
+                          "Lena" = "USGS02483500", 
+                          "Rockport" = "USGS02488000", 
+                          "Monticello" = "USGS02488500", 
+                          "Columbia" = "USGS02489000",
+                          "Bogalusa" = "USGS02489500")),
+            
             # select plot type
             selectInput("plottype", "Select",
                         c("Time series", 
@@ -37,13 +48,25 @@ ui <- navbarPage("Flood Frequency Analysis",
                       "Estimation method",
                       c("Maximum Likelihood (MLE)" = "mle", 
                         "Method of Moments (MOM)" = "mme", 
-                        "Probablity weighted moments (PWM)" = "pwme"))
+                        "Probablity weighted moments (PWM)" = "pwme")),
+              h5("RMSE:"),
+              uiOutput('rmse'),
+              h5("K-S:"),
+              uiOutput('ks'),
+              h5("A-D:"),
+              uiOutput('ad'),
+              h5("AIC:"),
+              uiOutput('aic'),
+              h5("BIC:"),
+              uiOutput('bic'),
+              h5("Parameters"),
+              verbatimTextOutput('params')
+              
             ),
             mainPanel(
               plotOutput("fitPlot"),
-              plotOutput("quantilePlot") 
-              #           hover = "plot_hover"),
-              # verbatimTextOutput("info")
+              plotOutput("quantilePlot"),
+              plotOutput("finalPlot") 
             )
           )
      )
@@ -51,7 +74,41 @@ ui <- navbarPage("Flood Frequency Analysis",
 
 # Define server logic required to draw a histogram
 server <- function(input, output) {
+    dataInput <- reactive({ 
+      data <- read_excel(paste0("data/", input$station, ".xls"), sheet = 1) 
+      out <- preprocessing(data)
+      data_processed <<- out$processed
+      data_sorted <<- out$sorted
+      aps <<- out$aps
+      return_periods <<- (dim(data_sorted)[1]+1)/data_sorted$rank    # Weibull plotting position   
+      if (input$distr == "norm") {
+        estim <<- normal(aps, input$method, log = FALSE, rp = return_periods, plotx = xseq)
+      }
+      if (input$distr == "lognorm") {
+        estim <<- normal(log(aps), input$method, log = TRUE, rp = return_periods, plotx = xseq)
+      }
+      if (input$distr == "expo") {
+        estim <<- exponential(aps, rp = return_periods, plotx = xseq)
+      }
+      if (input$distr == "gam") {
+        estim <<- gam(aps, input$method, rp = return_periods, plotx = xseq)
+      }
+      if (input$distr == "p3") {
+        estim <<- p3(aps, input$method, rp = return_periods, plotx = xseq)
+      }
+      if (input$distr == "lp3") {
+        estim <<- lp3(log(aps), input$method, rp = return_periods, plotx = xseq)
+      }
+      if (input$distr == "gum") {
+        estim <<- gumb(aps, input$method, rp = return_periods, plotx = xseq)
+      }
+      if (input$distr == "wei") {
+        estim <<- weibull(aps, input$method, rp = return_periods, plotx = xseq)
+      }
+      })
+    
     output$timePlot <- renderPlot({
+      dataInput()
       if (input$plottype == "Time series") {
           # time series plot
           plot(data_processed$Year, data_processed$aps, type="l", xlab = "Year", ylab = "Maximum discharge (cf/s)", main = "Time series of the raw data")
@@ -64,112 +121,66 @@ server <- function(input, output) {
   })
 
     output$fitPlot <- renderPlot({
+      dataInput()
       hist(aps, breaks=15, main = "Distribution of annual peak discharge", xlab = "Annual peak streamflow (cf/s)", prob = TRUE)
-      
-      if (input$distr == "norm") {  
-        est <- normal(aps, input$method, log = FALSE)
-        lines(xseq, dnorm(xseq, est$mu, est$sigma), col = "red", type="l", lwd = 2)
-      }
-      if (input$distr == "lognorm") {  
-        est <- normal(aps, input$method, log = TRUE)
-        lines(xseq, dlnorm(xseq, est$mu, est$sigma), ylim = c(0,4e-5), col = "red", type="l", lwd = 2)
-      }
-      if (input$distr == "expo") {  
-        est <- exponential(aps)
-        lines(xseq, dexp(xseq, est$lambda), col = "red", type="l",lwd = 2)
-      }
-      if (input$distr == "gam") {  
-        est <- gam(aps, input$method)
-        lines(xseq, dgamma(xseq, shape = est$shape, scale=est$scale), col = "red" , type="l", lwd = 2)
-      }
-      if (input$distr == "p3") {  
-        est <- p3(aps, input$method)
-        lines(xseq, PearsonDS::dpearsonIII(xseq, scale = est$scale, shape = est$shape, location = est$location), col = "red" , type="l", lwd = 2)
-      }
-      if (input$distr == "lp3") {  
-        est <- lp3(log(aps), input$method)
-        if(input$method == "mle") {
-          lines(density(rlogpearson(200000,a=est$scale,b=est$shape, c=est$location)), col = "red" , type="l", lwd = 2)
-        } else {
-          lines(xseq, dlpearsonIII(xseq, skew = est$skew, sdlog = est$sd, meanlog = est$mean), col = "red" , type="l", lwd = 2)
-        }
-      }
-      if (input$distr == "gum") {  
-        est <- gumb(aps, input$method)
-        lines(xseq, evd::dgumbel(xseq, loc = est$location, scale = est$scale), col = "red" , type="l", lwd = 2)
-      }
-      if (input$distr == "wei") {  
-        est <- weibull(aps, input$method)
-        lines(xseq, dweibull3(xseq, shape = est$shape, thres = est$threshold, scale = est$scale), col = "red" , type="l", lwd = 2)
-      }
       lines(density(aps), col = "blue", lwd = 2)
+      lines(xseq, estim$ploty, col = "red" , type="l", lwd = 2)
     })
     
     output$quantilePlot <- renderPlot({
-      return_periods <- (dim(data_sorted)[1]+1)/data_sorted$rank    # Weibull plotting position   
-      plot(log(return_periods), data_sorted$aps, xlab = "log return period", ylab = "Discharge (cfs)")
-      
-      if (input$distr == "norm") {  
-        est <- normal(aps, input$method, log = FALSE)
-        xt <- qnorm(1-(1/return_periods), est$mu, est$sigma)
-        lines(log(return_periods), xt, col=2)
-      }
-      if (input$distr == "lognorm") {  
-        est <- normal(aps, input$method, log = TRUE)
-        xt <- qlnorm(1-(1/return_periods), est$mu, est$sigma)
-        lines(log(return_periods), xt, col=2)
-      }
-      if (input$distr == "expo") {  
-        est <- exponential(aps)
-        xt <- log(return_periods)*(1/est$lambda)
-        lines(log(return_periods), xt, col=2)
-      }
-      if (input$distr == "gam") {  
-        est <- gam(aps, input$method)
-        z <- qnorm(1-(1/return_periods))
-        k <- skew(aps)/6
-        kt <- z+(z^2-1)*k + (1/3)*(z^3-6*z)*k^2-(z^2-1)*k^3+z*k^4+(1/3)*k^5
-        xt <- est$shape*est$scale + kt*sqrt(est$shape*(est$scale)^2)
-        lines(log(return_periods), xt, col=2)
-      }
-      if (input$distr == "p3") {  
-        est <- p3(aps, input$method)
-        z <- qnorm(1-(1/return_periods))
-        k <- skew(aps)/6
-        kt <- z+(z^2-1)*k + (1/3)*(z^3-6*z)*k^2-(z^2-1)*k^3+z*k^4+(1/3)*k^5
-        xt <- est$location + est$shape*est$scale + kt*sqrt(est$shape*(est$scale)^2)
-        lines(log(return_periods), xt, col=2)
-      }
-      if (input$distr == "lp3") {  
-        est <- p3(log(aps), input$method)
-        z <- qnorm(1-(1/return_periods))
-        k <- skew(log(aps))/6
-        kt <- z+(z^2-1)*k + (1/3)*(z^3-6*z)*k^2-(z^2-1)*k^3+z*k^4+(1/3)*k^5
-        xt <- est$location + est$shape*est$scale + kt*sqrt(est$shape*(est$scale)^2)
-        lines(log(return_periods), exp(xt), col=2)
-      }
-      if (input$distr == "gum") {  
-        est <- gumb(aps, input$method)
-        xt <- est$location - est$scale*log(-log(1-1/return_periods))
-        lines(log(return_periods), xt, col=2)
-      }
-      if (input$distr == "wei") {  
-        est <- weibull(aps, input$method)
-        xt <- est$threshold + est$scale*(log(return_periods))^(1/est$shape)
-        lines(log(return_periods), xt, col=2)
-      }
-      lines(density(aps), col = "blue", lwd = 2)
+      dataInput()
+      qqplot(aps, estim$xt, xlab="Observed peaks (cfs)", ylab="Estimated peaks (cfs)", main="Q-Q plot")
+      abline(c(0,1), col="red")
     })
     
-    # output$info <- renderText({
-    #   xy <- function(e) {
-    #     if(is.null(e)) return("NULL\n")
-    #     paste0("x=", round(e$x, 1), " y=", round(e$y, 1), "\n")
-    #   }
-    #   paste0(
-    #     "hover: ", xy(input$plot_hover)
-    #   )
-    # })
+    output$finalPlot <- renderPlot({
+      dataInput()
+      plot(log(return_periods), data_sorted$aps, xlab = "Log return period", ylab = "Discharge (cfs)", 
+           main = "Estimated peak discharge vs log return period")
+      lines(log(return_periods), estim$xt, col=2)
+    })
+    
+    output$ks <- renderPrint({
+      dataInput()
+      cat(round(ks.test(estim$xt, aps)$statistic, digits=3))
+    })
+    
+    output$rmse <- renderPrint({
+      dataInput()
+      cat(round(sqrt(sum((sort(aps, decreasing = TRUE)-estim$xt)^2)/length(aps)), digits=1))
+    })
+    
+    output$aic <- renderPrint({
+      dataInput()
+      if(input$method != "mle"){
+        cat("Only available for MLE") 
+      } else {
+      cat(round(-2*estim$likelihood+2*estim$parno, digits=1))
+      }
+    })
+    
+    output$bic <- renderPrint({
+      dataInput()
+      if(input$method != "mle"){
+       cat("Only available for MLE")
+      } else {
+        cat(round(-2*estim$likelihood+estim$parno*log(length(aps)), digits=1))
+      }
+    })
+    
+    output$ad <- renderPrint({
+      dataInput()
+      cat(round(estim$ad, digits=2))
+    })
+    
+    output$params <- renderPrint({
+      dataInput()
+      names <- names(estim$par)
+      for (i in 1:estim$parno){
+        cat(names[i], ": ", toString(signif(unlist(estim$par)[i], 5)))
+        cat("\n")
+      }
+    })
 }
 
 # Run the application 
