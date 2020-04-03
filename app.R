@@ -1,5 +1,6 @@
 library(shiny)
 source('fitting.R')
+source('combined-plots.R')
 
 # Define UI for application that draws a histogram
 ui <- navbarPage("Flood Frequency Analysis",
@@ -19,9 +20,11 @@ ui <- navbarPage("Flood Frequency Analysis",
                           "Bogalusa" = "USGS02489500")),
             
             # select plot type
-            selectInput("plottype", "Select",
+            selectInput("plottype", "Plot type",
                         c("Time series", 
-                          "Density"))
+                          "Density")),
+              h5("Number of outliers detected:"),
+              uiOutput('outliers')
           ),
           
           mainPanel(
@@ -59,7 +62,7 @@ ui <- navbarPage("Flood Frequency Analysis",
               uiOutput('aic'),
               h5("BIC:"),
               uiOutput('bic'),
-              h5("Parameters"),
+              h5("Parameters (and their standard errors)"),
               verbatimTextOutput('params')
               
             ),
@@ -69,7 +72,10 @@ ui <- navbarPage("Flood Frequency Analysis",
               plotOutput("finalPlot") 
             )
           )
-     )
+     ),
+  tabPanel("Compare",
+     plotOutput("compare", width = "50%")
+  )
 )
 
 # Define server logic required to draw a histogram
@@ -79,6 +85,7 @@ server <- function(input, output) {
       out <- preprocessing(data)
       data_processed <<- out$processed
       data_sorted <<- out$sorted
+      noutliers <<- out$noutliers
       aps <<- out$aps
       return_periods <<- (dim(data_sorted)[1]+1)/data_sorted$rank    # Weibull plotting position   
       if (input$distr == "norm") {
@@ -107,6 +114,12 @@ server <- function(input, output) {
       }
       })
     
+    output$outliers <- renderText({
+      # report number of outliers
+      dataInput()
+      noutliers
+    })
+    
     output$timePlot <- renderPlot({
       dataInput()
       if (input$plottype == "Time series") {
@@ -115,12 +128,14 @@ server <- function(input, output) {
       }
       
       if (input$plottype == "Density") {  
-          hist(aps, breaks=15, main = "Distribution of annual peak discharge", xlab = "Annual peak streamflow (cf/s)", prob = TRUE)
-          lines(density(aps), col = "blue", lwd = 2)
+          # density plot
+          hist(data_processed$aps, breaks=15, main = "Distribution of annual peak discharge", xlab = "Annual peak streamflow (cf/s)", prob = TRUE)
+          lines(density(data_processed$aps), col = "blue", lwd = 2)
       }
   })
 
     output$fitPlot <- renderPlot({
+      # fitted density plot
       dataInput()
       hist(aps, breaks=15, main = "Distribution of annual peak discharge", xlab = "Annual peak streamflow (cf/s)", prob = TRUE)
       lines(density(aps), col = "blue", lwd = 2)
@@ -128,29 +143,38 @@ server <- function(input, output) {
     })
     
     output$quantilePlot <- renderPlot({
+      # q-q plot
       dataInput()
       qqplot(aps, estim$xt, xlab="Observed peaks (cfs)", ylab="Estimated peaks (cfs)", main="Q-Q plot")
-      abline(c(0,1), col="red")
+      abline(c(0,1), col="red", lty=1, lwd=2)
+      legend("topleft", legend=c("1-1 line", "Regression line", " 95% confidence band\n(based on K-S statistic)"),
+             col=c("red", "grey", "grey"), lty=c(1,1,2), lwd=c(2,1,1), cex=0.95)
     })
     
     output$finalPlot <- renderPlot({
+      # plot of estimated discharge against return period
       dataInput()
-      plot(log(return_periods), data_sorted$aps, xlab = "Log return period", ylab = "Discharge (cfs)", 
-           main = "Estimated peak discharge vs log return period")
+      plot(log(return_periods), data_sorted$aps, xlab = "Return period (years)c", ylab = "Discharge (cfs)", 
+           main = "Estimated peak discharge vs log return period", xaxt="n")
       lines(log(return_periods), estim$xt, col=2)
+      at.x <- log(c(1,5,10,25,50,75,100))
+      axis(1, at=at.x, labels=round(exp(at.x), 0), las=1)
     })
     
     output$ks <- renderPrint({
+      # Kolmogorov-Smirnov
       dataInput()
-      cat(round(ks.test(estim$xt, aps)$statistic, digits=3))
+      cat(format(signif(suppressWarnings(ks.test(estim$xt, aps)$statistic), 3), nsmall=3))
     })
     
     output$rmse <- renderPrint({
+      # root-mean-square-error
       dataInput()
-      cat(round(sqrt(sum((sort(aps, decreasing = TRUE)-estim$xt)^2)/length(aps)), digits=1))
+      cat(format(signif(sqrt(sum((sort(aps, decreasing = TRUE)-estim$xt)^2)/length(aps)), 5), nsmall=1))
     })
     
     output$aic <- renderPrint({
+      # Akaike Information Criterion
       dataInput()
       if(input$method != "mle"){
         cat("Only available for MLE") 
@@ -160,6 +184,7 @@ server <- function(input, output) {
     })
     
     output$bic <- renderPrint({
+      # Bayesian Information Criterion
       dataInput()
       if(input$method != "mle"){
        cat("Only available for MLE")
@@ -169,18 +194,26 @@ server <- function(input, output) {
     })
     
     output$ad <- renderPrint({
+      # Anderson-Darling
       dataInput()
-      cat(round(estim$ad, digits=2))
+      cat(format(signif(estim$ad, 4), nsmall=3))
     })
     
     output$params <- renderPrint({
+      # estimated parameters
       dataInput()
       names <- names(estim$par)
       for (i in 1:estim$parno){
-        cat(names[i], ": ", toString(signif(unlist(estim$par)[i], 5)))
+        cat(names[i], ": ", format(signif(unlist(estim$par)[i], 5), nsmall=2), " (", format(signif(unlist(estim$sd)[i],4), nsmall=2),")")
         cat("\n")
       }
     })
+    
+    output$compare <- renderPlot({
+      # plot comparing all distributions
+      plot_combined(input$station)
+    })
+
 }
 
 # Run the application 
